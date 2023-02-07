@@ -1,4 +1,6 @@
-﻿#include "httplib.h"
+﻿#include "resource.h"
+
+#include "httplib.h"
 #include "CLI11.hpp"
 #include "json.hpp"
 
@@ -12,17 +14,32 @@
 #include <VersionHelpers.h>
 #include <Psapi.h>
 
+extern "C" {
+#include <libavutil/timestamp.h>
+#include <libavformat/avformat.h>
+#pragma comment(lib, "libffmpeg.lib")
+}
+
 using namespace std;
 using namespace httplib;
 using json = nlohmann::json;
 
 #define hex2int(x) (x <= '9' ? x - '0' : x - 'a' + 10)
 
+struct down_param {
+    string infile;
+    string outfile;
+    uint64_t index;
+};
+
 vector<uint8_t> prefix_bin;
-bool short_char = false, Running = true;
+bool short_char = false, Running = true, require_scan = false, auto_scan = true;
+uint64_t wait_int = 5000, next_scan = 0;
 regex is_url("http(s)?://([\\w-]+\\.)+[\\w-]+(/[\\w- ./?%&=]*)?");
 set<DWORD> ClassInPids;
-map<DWORD, map<string, set<string> > > ReplayUrls, NewFoundUrls;
+map<DWORD, set<string>> ReplayUrls;
+map<string, set<string>> url_title;
+map<DWORD, map<string, set<string>>> NewFoundUrls;
 
 bool IsProcessRunAsAdmin()
 {
@@ -41,6 +58,41 @@ bool IsProcessRunAsAdmin()
         FreeSid(AdministratorsGroup);
     }
     return b == TRUE;
+}
+
+vector<uint8_t> GetResource(uint32_t ResId, LPCWSTR Type)
+{
+    vector<uint8_t> nul_vec;
+    HMODULE ghmodule = GetModuleHandleW(NULL);
+    if (!ghmodule)
+    {
+        cerr << "Failed to get ghmodule\n";
+        return nul_vec;
+    }
+    HRSRC hrsrc = FindResourceW(ghmodule, MAKEINTRESOURCE(ResId), Type);
+    if (!hrsrc)
+    {
+        cerr << "Failed to get hrsrc\n";
+        return nul_vec;
+    }
+    HGLOBAL hg = LoadResource(ghmodule, hrsrc);
+    if (hg == NULL)
+    {
+        cerr << "Failed to get hg\n";
+        return nul_vec;
+    }
+    unsigned char* addr = (unsigned char*)(LockResource(hg));
+    if (!addr)
+        cerr << "Failed to get addr\n";
+    DWORD size = SizeofResource(ghmodule, hrsrc);
+    vector<uint8_t> ret(addr, addr + size);
+    return ret;
+}
+string vec2str(vector<uint8_t> vec)
+{
+    string out;
+    out.assign(vec.begin(), vec.end());
+    return out;
 }
 
 // Check whether a hex string is valid
@@ -258,19 +310,185 @@ void ScanUrl()
         for (map<string, set<string> >::iterator j = (i->second).begin(); j != (i->second).end(); j++)
             for (set<string>::iterator k = (j->second).begin(); k != (j->second).end(); k++)
             {
-                ReplayUrls[i->first][j->first].insert(*k);
+                // ReplayUrls[i->first][j->first].insert(*k);
+                ReplayUrls[i->first].insert(j->first);
+                url_title[j->first].insert(*k);
                 cerr << i->first << " " << utf8_asc(j->first) << " " << utf8_asc(*k) << "\n";
             }
 }
 
 DWORD WINAPI ScanThread(LPVOID lParam)
 {
+    uint64_t time;
     while (Running)
     {
-        Sleep(1000);
+        Sleep(50);
+        time = GetTickCount64();
+        if (require_scan)
+        {
+            require_scan = false;
+            next_scan = time + wait_int;
+            ScanUrl();
+            continue;
+        }
+        if (auto_scan && time > next_scan)
+        {
+            require_scan = false;
+            next_scan = time + wait_int;
+            ScanUrl();
+        }
     }
     return 0;
 }
+
+int remux(LPARAM lParam)
+{
+    const AVOutputFormat* ofmt = NULL;
+    AVFormatContext* ifmt_ctx = NULL, * ofmt_ctx = NULL;
+    AVPacket* pkt = NULL;
+    char* in_filename, * out_filename;
+    int ret, i;
+    int stream_index = 0;
+    int* stream_mapping = NULL;
+    int stream_mapping_size = 0;
+
+
+    in_filename = (char*)((down_param*)lParam)->infile.data();
+    out_filename = (char*)((down_param*)lParam)->outfile.data();
+
+    pkt = av_packet_alloc();
+    if (!pkt) {
+        fprintf(stderr, "Could not allocate AVPacket\n");
+        return 1;
+    }
+
+    if ((ret = avformat_open_input(&ifmt_ctx, in_filename, 0, 0)) < 0) {
+        fprintf(stderr, "Could not open input file '%s'", in_filename);
+        goto end;
+    }
+
+    if ((ret = avformat_find_stream_info(ifmt_ctx, 0)) < 0) {
+        fprintf(stderr, "Failed to retrieve input stream information");
+        goto end;
+    }
+
+    av_dump_format(ifmt_ctx, 0, in_filename, 0);
+
+    avformat_alloc_output_context2(&ofmt_ctx, NULL, NULL, out_filename);
+    if (!ofmt_ctx) {
+        fprintf(stderr, "Could not create output context\n");
+        ret = AVERROR_UNKNOWN;
+        goto end;
+    }
+
+    stream_mapping_size = ifmt_ctx->nb_streams;
+    stream_mapping = (int*)av_calloc(stream_mapping_size, sizeof(*stream_mapping));
+    if (!stream_mapping) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+
+    ofmt = ofmt_ctx->oformat;
+
+    for (i = 0; i < ifmt_ctx->nb_streams; i++) {
+        AVStream* out_stream;
+        AVStream* in_stream = ifmt_ctx->streams[i];
+        AVCodecParameters* in_codecpar = in_stream->codecpar;
+
+        if (in_codecpar->codec_type != AVMEDIA_TYPE_AUDIO &&
+            in_codecpar->codec_type != AVMEDIA_TYPE_VIDEO &&
+            in_codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE) {
+            stream_mapping[i] = -1;
+            continue;
+        }
+
+        stream_mapping[i] = stream_index++;
+
+        out_stream = avformat_new_stream(ofmt_ctx, NULL);
+        if (!out_stream) {
+            fprintf(stderr, "Failed allocating output stream\n");
+            ret = AVERROR_UNKNOWN;
+            goto end;
+        }
+
+        ret = avcodec_parameters_copy(out_stream->codecpar, in_codecpar);
+        if (ret < 0) {
+            fprintf(stderr, "Failed to copy codec parameters\n");
+            goto end;
+        }
+        out_stream->codecpar->codec_tag = 0;
+    }
+    av_dump_format(ofmt_ctx, 0, out_filename, 1);
+
+    if (!(ofmt->flags & AVFMT_NOFILE)) {
+        ret = avio_open(&ofmt_ctx->pb, out_filename, AVIO_FLAG_WRITE);
+        if (ret < 0) {
+            fprintf(stderr, "Could not open output file '%s'", out_filename);
+            goto end;
+        }
+    }
+
+    ret = avformat_write_header(ofmt_ctx, NULL);
+    if (ret < 0) {
+        fprintf(stderr, "Error occurred when opening output file\n");
+        goto end;
+    }
+
+    while (true) {
+        AVStream* in_stream, * out_stream;
+
+        ret = av_read_frame(ifmt_ctx, pkt);
+        if (ret < 0)
+            break;
+
+        in_stream = ifmt_ctx->streams[pkt->stream_index];
+        if (pkt->stream_index >= stream_mapping_size ||
+            stream_mapping[pkt->stream_index] < 0) {
+            av_packet_unref(pkt);
+            continue;
+        }
+
+        pkt->stream_index = stream_mapping[pkt->stream_index];
+        out_stream = ofmt_ctx->streams[pkt->stream_index];
+        //log_packet(ifmt_ctx, pkt, "in");
+
+        /* copy packet */
+        av_packet_rescale_ts(pkt, in_stream->time_base, out_stream->time_base);
+        pkt->pos = -1;
+        //log_packet(ofmt_ctx, pkt, "out");
+
+        ret = av_interleaved_write_frame(ofmt_ctx, pkt);
+        /* pkt is now blank (av_interleaved_write_frame() takes ownership of
+         * its contents and resets pkt), so that no unreferencing is necessary.
+         * This would be different if one used av_write_frame(). */
+        if (ret < 0) {
+            fprintf(stderr, "Error muxing packet\n");
+            break;
+        }
+    }
+
+    av_write_trailer(ofmt_ctx);
+end:
+    printf("\n");
+    av_packet_free(&pkt);
+
+    avformat_close_input(&ifmt_ctx);
+
+    /* close output */
+    if (ofmt_ctx && !(ofmt->flags & AVFMT_NOFILE))
+        avio_closep(&ofmt_ctx->pb);
+    avformat_free_context(ofmt_ctx);
+
+    av_freep(&stream_mapping);
+
+    if (ret < 0 && ret != AVERROR_EOF) {
+        //fprintf(stderr, "Error occurred: %s\n", av_err2str(ret));
+        return 1;
+    }
+
+    return 0;
+}
+
 
 int main(int argc, char** argv)
 {
@@ -309,6 +527,8 @@ int main(int argc, char** argv)
         Params.append(port_str);
         if (short_char)
             Params.append(" --short-char");
+        if (no_browser)
+            Params.append(" --no-browser");
         HINSTANCE res = ShellExecuteA(NULL, "runas", szPath, Params.data(), NULL, SW_SHOW);
         if ((uint64_t)res > 32)
         {
@@ -335,7 +555,27 @@ int main(int argc, char** argv)
     Server svr;
 
     svr.Get("/", [](const Request& req, Response& res) {
-        res.set_content("<!DOCTYPE html><html><head><meta http-equiv=\"Refresh\" content=\"0;/get-urls\"></head></html>", "text/html");
+        res.set_content(vec2str(GetResource(IDR_HTML1, RT_HTML)), "text/html");
+        });
+
+    svr.Get("/js/video.min.js", [](const Request& req, Response& res) {
+        res.set_content(vec2str(GetResource(IDR_JS1, L"JS")), "text/javascript");
+        });
+
+    svr.Get("/js/videojs-http-streaming.min.js", [](const Request& req, Response& res) {
+        res.set_content(vec2str(GetResource(IDR_JS2, L"JS")), "text/javascript");
+        });
+
+    svr.Get("/css/video-js.min.css", [](const Request& req, Response& res) {
+        res.set_content(vec2str(GetResource(IDR_CSS1, L"CSS")), "text/css");
+        });
+
+    svr.Get("/css/style.min.css", [](const Request& req, Response& res) {
+        res.set_content(vec2str(GetResource(IDR_CSS2, L"CSS")), "text/css");
+        });
+
+    svr.Get("/js/script.min.js", [](const Request& req, Response& res) {
+        res.set_content(vec2str(GetResource(IDR_JS3, L"JS")), "text/javascript");
         });
 
     svr.Get("/get-urls", [](const Request& req, Response& res) {
@@ -343,34 +583,77 @@ int main(int argc, char** argv)
         res.set_content(res_json.dump(), "text/json");
         });
 
+    svr.Get("/get-titles", [](const Request& req, Response& res) {
+        json res_json(url_title);
+        res.set_content(res_json.dump(), "text/json");
+        });
+
+    svr.Get("/scan", [](const Request& req, Response& res) {
+        require_scan = true;
+        res.set_content("success", "text/plain");
+        });
+
+    svr.Post("/set-autoscan-delay", [](const Request& req, Response& res) {
+        res.set_content("success", "text/plain");
+        json body = json::parse(req.body);
+        if (!body.is_number())
+            res.set_content("Invalid argument: body should be a single float number", "text/plain");
+        else
+        {
+            double required_delay = body;
+            if (required_delay < 1 || required_delay > 90)
+                res.set_content("Invalid argument: delay should between 1 and 90", "text/plain");
+            else
+                wait_int = required_delay * 1000;
+        }
+        });
+
+    svr.Get("/enable-autoscan", [](const Request& req, Response& res) {
+        auto_scan = true;
+        next_scan = GetTickCount64() - 1;
+        res.set_content("success", "text/plain");
+        });
+
+    svr.Get("/disable-autoscan", [](const Request& req, Response& res) {
+        auto_scan = false;
+        res.set_content("success", "text/plain");
+        });
+
+    svr.Get("/get-status", [](const Request& req, Response& res) {
+        json ret_json = json::parse(R"({})");
+        ret_json["autoscan"] = auto_scan;
+        ret_json["wait_interval"] = (double)wait_int / 1000;
+        res.set_content(ret_json.dump(), "text/json");
+        });
+
     svr.Get("/stop", [&](const Request& req, Response& res) {
         Running = false;
         svr.stop();
         });
 
+    string url_open = "http://";
+    if (strcmp(ip.data(), "0.0.0.0") == 0)
+        url_open.append("127.0.0.1");
+    else if (strcmp(ip.data(), "::") == 0)
+        url_open.append("[::1]");
+    else if (ip.find(":") != ip.npos)
+    {
+        url_open.append("[");
+        url_open.append(ip);
+        url_open.append("]");
+    }
+    else
+        url_open.append(ip);
+    url_open.append(":");
+    CHAR port_str[7] = { 0 };
+    sprintf(port_str, "%d", port);
+    url_open.append(port_str);
     if (!no_browser)
     {
-        string url_open = "http://";
-        if (strcmp(ip.data(), "0.0.0.0") == 0)
-            url_open.append("127.0.0.1");
-        else if (strcmp(ip.data(), "::") == 0)
-            url_open.append("[::1]");
-        else if (ip.find(":") != ip.npos)
-        {
-            url_open.append("[");
-            url_open.append(ip);
-            url_open.append("]");
-        }
-        else
-            url_open.append(ip);
-        url_open.append(":");
-        CHAR port_str[7] = { 0 };
-        sprintf(port_str, "%d", port);
-        url_open.append(port_str);
         ShellExecuteA(NULL, "open", url_open.data(), NULL, NULL, SW_SHOW);
     }
 
-    cout << "Start listening at " << ip << " (port " << port << " )\n";
+    cout << "Start listening at " << url_open << "\n";
     svr.listen(ip, port);
 
     return 0;

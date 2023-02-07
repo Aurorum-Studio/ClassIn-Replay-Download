@@ -29,5 +29,21 @@
     <ClInclude Include="json.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="resource.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="ClassIn_Replay_Download.rc">
+      <Filter>资源文件</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\html\css\video-js.min.css" />
+    <None Include="..\html\js\video.min.js" />
+    <None Include="..\html\js\videojs-http-streaming.min.js" />
+    <None Include="..\html\css\style.min.css" />
+    <None Include="..\html\index.min.html" />
+    <None Include="..\html\js\script.min.js" />
   </ItemGroup>
 </Project>
