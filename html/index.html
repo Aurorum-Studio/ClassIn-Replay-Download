@@ -5,11 +5,11 @@
     <meta charset="utf-8">
     <meta name="viewport" content="initial-scale=1.0,user-scalable=no">
     <title>ClassIn Replay Download</title>
-    <link href="css/style.css" rel="stylesheet">
+    <link href="css/style.min.css" rel="stylesheet">
     <link href="css/video-js.min.css" rel="stylesheet">
     <script src="js/video.min.js"></script>
     <script src="js/videojs-http-streaming.min.js"></script>
-    <script src="js/script.js" defer></script>
+    <script src="js/script.min.js" defer></script>
 </head>
 
 <body>
@@ -20,7 +20,7 @@
             <button class="btn-header" onclick="ClearVideos();GetVideos(false)">Refresh</button>
             <button class="btn-header" onclick="OpenDownList()">Download list<div class="notify-num">2</div></button>
             <button class="btn-header">Download selected</button>
-            <button class="btn-header" onclick="fetch('/stop')">Exit</button>
+            <button class="btn-header" onclick="fetch('/stop').then(null,()=>{location.href='about:blank'})">Exit</button>
         </div>
     </div>
     <div class="downlist-cover" style="display:none;opacity:0">
@@ -92,7 +92,7 @@
             <div class="down-path"></div>
             <input id="path">
             <input class="check-big" type="checkbox" onchange="SwitchAutoScan()"> Enable auto scan every <input class="delay-int" type="number" min="1" max="90" step="0.5" onchange="if(this.value>90){this.value=90}if(this.value<1){this.value=1}ChangeDelayTime()"
-                onfocus="StartModify()" onblur="StopModify()" onkeypress="StartModify();ChangeDelayTime()" onmousemove="StartModify()"> seconds
+                onfocus="modify_focus=true;StartModify()" onblur="modify_focus=false;StopModify()" onkeypress="StartModify();ChangeDelayTime()" onmousemove="if(modify_focus){StartModify()}"> seconds
         </div>
     </div>
 </body>

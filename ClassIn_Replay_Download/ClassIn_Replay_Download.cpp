@@ -124,6 +124,22 @@ bool EndsWith_w(const wstring& str, const wstring& suffix)
     else
         return false;
 }
+bool compare_pred(CHAR a, CHAR b)
+{
+    return tolower(a) == tolower(b);
+}
+bool EndsWith(const string& str, const string& suffix)
+{
+    if (str.size() < suffix.size())
+        return false;
+
+    string tstr = str.substr(str.size() - suffix.size());
+
+    if (tstr.length() == suffix.length())
+        return equal(suffix.begin(), suffix.end(), tstr.begin(), compare_pred_w);
+    else
+        return false;
+}
 
 string asc_utf8(string in_str)
 {
@@ -227,7 +243,7 @@ vector<string> FindUrl(DWORD pid)
                 tmp_str = buffer;
                 delete[] buffer;
             }
-            if (regex_match(tmp_str, is_url))
+            if (regex_match(tmp_str, is_url) && !EndsWith(tmp_str, "?"))
                 ret.push_back(asc_utf8(tmp_str));
             it = search(it + 1, mem + info.RegionSize, prefix_bin.begin(), prefix_bin.end());
         }

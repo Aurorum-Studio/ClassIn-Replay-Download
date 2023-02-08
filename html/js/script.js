@@ -35,10 +35,10 @@ function HTMLEncode(html) {
 }
 
 var count = 0,
-    shown_videos = [];
+    shown_videos = {};
 
 function ClearVideos() {
-    shown_videos = [];
+    shown_videos = {};
     e = qa(".item");
     for (var i = 1; i < e.length; i++) {
         e[i].remove()
@@ -46,21 +46,34 @@ function ClearVideos() {
 }
 
 function AddVideo(url, titles) {
-    if (shown_videos.includes(url)) {
+    if (shown_videos[url] != undefined) {
+        for (var i = 0; i < titles.length; i++) {
+            if (!shown_videos[url]["titles"].includes(titles[i])) {
+                q("#list" + shown_videos[url]["id"]).innerHTML += "<option>" + HTMLEncode(titles[i]) + "</option>";
+                shown_videos[url]["titles"].push(titles[i])
+            }
+        }
         return
     }
     id = ++count;
     var n = document.createElement("div");
     n.setAttribute("class", "item");
+    n.setAttribute("id", "item" + id);
     n.style.opacity = '0';
     n.style.height = '0';
     var ndata = [];
     for (var i = 0; i < titles.length; i++) {
         ndata.push(HTMLEncode(titles[i]))
     }
-    n.innerHTML = '<input type="checkbox" class="select-vid"><div class="vid-container"><video-js oncontextmenu="return false" controls id="video' + id + '"><source src="' + url + '"></video-js></div><div class="item-opt"><div class="filename"></div><input class="input-filename" list="list' + id + '"><datalist id="list' + id + '"><option>' + ndata.join('</option><option>') + '</option></datalist><div class="fileext"></div><select class="select-fileext"><option>.mp4</option><option>.mkv</option><option>.m4v</option><option>.flv</option></select><button class="btn">Download</button>';
+    n.innerHTML = '<input type="checkbox" class="select-vid"><div class="vid-container"><video-js oncontextmenu="return false" controls id="video' + id + '"><source src="' + url + '"></video-js></div><div class="item-opt"><div class="filename"></div><input class="input-filename" id="filename' + id + '" list="list' + id + '"><datalist id="list' + id + '"><option>' + ndata.join('</option><option>') + '</option></datalist><div class="fileext"></div><select class="select-fileext"><option>.mp4</option><option>.mkv</option><option>.m4v</option><option>.flv</option></select><button class="btn">Download</button>';
     q(".content").appendChild(n);
-    shown_videos.push(url);
+    for (var i = 0; i < ndata.length; i++) {
+        if ((!ndata[i].toLowerCase().includes("classin")) && (!ndata[i].toLowerCase().includes("classroom"))) {
+            q("#filename" + id).value = ndata[i];
+            break;
+        }
+    }
+    shown_videos[url] = { "titles": titles, "id": id };
     videojs("video" + id);
     setTimeout(() => {
         n.style.opacity = '1';
@@ -74,14 +87,15 @@ function GetVideos(r = true) {
             AddVideo(url, data[url])
         }
         if (r) {
-            setTimeout(GetVideos, 500);
+            setTimeout(GetVideos, 1000);
         }
     });
 }
 GetVideos();
 
 var modifying = false,
-    modify_timeout = 0;
+    modify_timeout = 0,
+    modify_focus = false;
 
 function StartModify() {
     modifying = true;
@@ -101,7 +115,7 @@ function RefreshStatus() {
     fetch("/get-status").then(response => response.json(), () => { setTimeout(RefreshStatus, 300) }).then(data => {
         q(".conf-panel>.check-big").checked = data["autoscan"];
         if (!modifying) { q(".delay-int").value = data["wait_interval"] }
-        setTimeout(RefreshStatus, 300)
+        setTimeout(RefreshStatus, 1000)
     })
 }
 RefreshStatus()
