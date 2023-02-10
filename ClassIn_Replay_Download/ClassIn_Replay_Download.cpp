@@ -285,7 +285,7 @@ string GetUniqueFilename(string path, string filename)
     if (FilePathExists(utf8_w(path_new + filename).data()))
     {
         uint64_t add_suffix = 1;
-        regex rename_start(R"((.*\()(\d+)(\)(\.[^.]*|)))"), split_name(R"((.*)(\.[^\.]*|))");
+        regex rename_start(R"((.*\()(\d+)(\)(\.[^.]*|)))"), split_name(R"((.*)(\.[^\.]*))");
         smatch match_result;
         string name_prefix, name_suffix = ")";
         if (regex_match(filename, match_result, rename_start))
@@ -459,9 +459,10 @@ void ScanUrl()
         for (map<string, set<string> >::iterator j = (i->second).begin(); j != (i->second).end(); j++)
             for (set<string>::iterator k = (j->second).begin(); k != (j->second).end(); k++)
             {
+                if (!url_title[j->first].contains(*k))
+                    cerr << i->first << " " << utf8_asc(j->first) << " " << utf8_asc(*k) << "\n";
                 ReplayUrls[i->first].insert(j->first);
                 url_title[j->first].insert(*k);
-                cerr << i->first << " " << utf8_asc(j->first) << " " << utf8_asc(*k) << "\n";
             }
     lock_url.unlock();
     lock_scan.unlock();
@@ -501,6 +502,7 @@ int32_t remux(down_param param)
     int stream_index = 0;
     int* stream_mapping = NULL;
     int stream_mapping_size = 0;
+    vector<int64_t> last_dts;
 
     in_filename = (char*)param.infile.data();
     out_filename = (char*)param.outfile.data();
@@ -569,6 +571,7 @@ int32_t remux(down_param param)
 
         stream_mapping[i] = stream_index++;
         Downloads[param.index].percentage.push_back(0);
+        last_dts.push_back(0);
 
         out_stream = avformat_new_stream(ofmt_ctx, NULL);
         if (!out_stream) {
@@ -628,12 +631,20 @@ int32_t remux(down_param param)
 
         pkt->stream_index = stream_mapping[pkt->stream_index];
         out_stream = ofmt_ctx->streams[pkt->stream_index];
-        //log_packet(ifmt_ctx, pkt, "in");
 
         /* copy packet */
         av_packet_rescale_ts(pkt, in_stream->time_base, out_stream->time_base);
         pkt->pos = -1;
-        //log_packet(ofmt_ctx, pkt, "out");
+        if (pkt->dts <= last_dts[pkt->stream_index])
+            continue;
+        last_dts[pkt->stream_index] = pkt->dts;
+        lock_down_status.lock();
+
+        AVRational* time_base = &ifmt_ctx->streams[pkt->stream_index]->time_base;
+        Downloads[param.index].percentage[pkt->stream_index] = 100.0
+            * ((pkt->pts * av_q2d(*time_base) - ifmt_ctx->start_time / (double)AV_TIME_BASE))
+            / (ifmt_ctx->duration / (double)AV_TIME_BASE);
+        lock_down_status.unlock();
 
         ret = av_interleaved_write_frame(ofmt_ctx, pkt);
         /* pkt is now blank (av_interleaved_write_frame() takes ownership of
@@ -646,12 +657,6 @@ int32_t remux(down_param param)
             lock_down_status.unlock();
             break;
         }
-        AVRational* time_base = &ifmt_ctx->streams[pkt->stream_index]->time_base;
-        lock_down_status.lock();
-        Downloads[param.index].percentage[pkt->stream_index] = 100.0 \
-            * ((pkt->pts * av_q2d(*time_base) - ifmt_ctx->start_time / (double)AV_TIME_BASE)) \
-            / (ifmt_ctx->duration / (double)AV_TIME_BASE);
-        lock_down_status.unlock();
     }
 
     av_write_trailer(ofmt_ctx);
@@ -723,7 +728,7 @@ DWORD WINAPI RemuxStarter(LPVOID lParam)
             << "\"\n";
         lock_down_status.unlock();
         remux(param);
-        Downloads[param.index].status = DOWNLOADING;
+        lock_down_status.lock();
         if (Downloads[param.index].status != DOWNLOAD_SUCCEEDED &&
             Downloads[param.index].status != DOWNLOAD_FAILED &&
             Downloads[param.index].status != DOWNLOAD_CANCELLED)
@@ -731,8 +736,8 @@ DWORD WINAPI RemuxStarter(LPVOID lParam)
             Downloads[param.index].status = DOWNLOAD_FAILED;
             Downloads[param.index].err_msg = "Unknown error";
         }
-        cerr << "[" << param.index << "] Download finished with code " << Downloads[param.index].status
-            << " error message (if success, it's empty): \n    " << Downloads[param.index].err_msg << "\n";
+        cerr << "[" << param.index << "] Download finished with code " << (int)Downloads[param.index].status
+            << "; error message (if success, it's empty): \n    " << Downloads[param.index].err_msg << "\n";
         lock_down_status.unlock();
         download_lock.release();
     }
@@ -921,17 +926,31 @@ int main(int argc, char** argv)
             else
             {
                 if (!body["downloads"].is_array())
+                {
                     success = 2;
+                    goto end;
+                }
                 for (int i = 0; i < body["downloads"].size(); i++)
                 {
                     if (!body["downloads"][i].is_object())
+                    {
                         success = 2;
+                        goto end;
+                    }
                     if ((!body["downloads"][i].contains("url")) || (!body["downloads"][i].contains("name")))
+                    {
                         success = 2;
+                        goto end;
+                    }
                 }
                 string url, name;
                 for (int i = 0; i < body["downloads"].size(); i++)
                 {
+                    if (!url_title.contains(body["downloads"][i]["url"]))
+                    {
+                        success = 3;
+                        goto end;
+                    }
                     HANDLE ltHandle;
                     new_down_args.filename = body["downloads"][i]["name"];
                     new_down_args.path = body["path"];
@@ -951,6 +970,8 @@ int main(int argc, char** argv)
             res.set_content("success", "text/plain");
         else if(success == 2)
             res.set_content("Invalid argument: format should be like {\"path\": ..., \"downloads\": [{\"url\": ..., \"name\": ...}, ...]}", "text/plain");
+        else if(success == 3)
+            res.set_content("Invalid argument: url not recognized", "text/plain");
         });
 
     svr.Delete("/cancel-download/(\\d+)", [&](const Request& req, Response& res) {
@@ -970,11 +991,11 @@ int main(int argc, char** argv)
         });
 
     svr.Get("/download-status", [](const Request& req, Response& res) {
-        json ret_json = "[]"_json, empty_dict = "{}"_json;
+        json ret_json = "[]"_json;
         lock_down_status.lock();
         for (int i = 0; i < Downloads.size(); i++)
         {
-            ret_json.push_back(empty_dict);
+            ret_json.push_back("{}"_json);
             ret_json[i]["url"] = Downloads[i].url;
             ret_json[i]["name"] = Downloads[i].fallback_filename;
             ret_json[i]["path"] = Downloads[i].path;
@@ -994,7 +1015,8 @@ int main(int argc, char** argv)
                 double percentage = 0;
                 for (int j = 0; j < Downloads[i].percentage.size(); j++)
                     percentage += Downloads[i].percentage[j];
-                percentage /= Downloads[i].percentage.size();
+                if (Downloads[i].percentage.size())
+                    percentage /= Downloads[i].percentage.size();
                 ret_json[i]["percent"] = percentage < 0 ? 0.0 : (percentage >= 100 ? 99.99 : percentage);
                 if (Downloads[i].status != DOWNLOADING)
                     ret_json[i]["msg"] = Downloads[i].err_msg;

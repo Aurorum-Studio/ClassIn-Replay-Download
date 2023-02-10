@@ -80,11 +80,7 @@ function AddVideo(url, titles) {
 }
 
 function GetVideos(r = true) {
-    fetch("/get-titles").then(response => response.json(), () => {
-        if (r) {
-            setTimeout(GetVideos, 1000);
-        }
-    }).then(data => {
+    fetch("/get-titles").then(response => response.json(), () => {}).then(data => {
         for (var url in data) {
             AddVideo(url, data[url])
         }
@@ -114,7 +110,7 @@ function StopModify() {
 }
 
 function RefreshStatus() {
-    fetch("/get-status").then(response => response.json(), () => { setTimeout(RefreshStatus, 300) }).then(data => {
+    fetch("/get-status").then(response => response.json(), () => { setTimeout(RefreshStatus, 1000) }).then(data => {
         q(".conf-panel>.check-big").checked = data["autoscan"];
         if (!modifying) { q(".delay-int").value = data["wait_interval"] }
         setTimeout(RefreshStatus, 1000)
