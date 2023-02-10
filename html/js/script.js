@@ -60,7 +60,6 @@ function AddVideo(url, titles) {
     n.setAttribute("class", "item");
     n.setAttribute("id", "item" + id);
     n.style.opacity = '0';
-    n.style.height = '0';
     var ndata = [];
     for (var i = 0; i < titles.length; i++) {
         ndata.push(HTMLEncode(titles[i]))
@@ -77,12 +76,15 @@ function AddVideo(url, titles) {
     videojs("video" + id);
     setTimeout(() => {
         n.style.opacity = '1';
-        n.style.height = ''
     }, 50);
 }
 
 function GetVideos(r = true) {
-    fetch("/get-titles").then(response => response.json()).then(data => {
+    fetch("/get-titles").then(response => response.json(), () => {
+        if (r) {
+            setTimeout(GetVideos, 1000);
+        }
+    }).then(data => {
         for (var url in data) {
             AddVideo(url, data[url])
         }

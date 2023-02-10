@@ -10,9 +10,12 @@
 #include <set>
 #include <algorithm>
 #include <regex>
+#include <mutex>
+#include <semaphore>
 #include <Windows.h>
 #include <VersionHelpers.h>
 #include <Psapi.h>
+#include <ShlObj.h>
 
 extern "C" {
 #include <libavutil/timestamp.h>
@@ -32,14 +35,46 @@ struct down_param {
     uint64_t index;
 };
 
+struct down_t_param {
+    string path;
+    string filename;
+    string url;
+};
+
+struct DownloadStatus {
+    string url;
+    string path;
+    string filename;
+    string fallback_filename;
+    vector<double> percentage;
+    uint8_t status;
+#define DOWNLOADING 1
+#define DOWNLOAD_FAILED 2
+#define DOWNLOAD_CANCELLED 3
+#define DOWNLOAD_SUCCEEDED 4
+#define DOWNLOAD_WAITING 5
+    string err_msg;
+};
+
 vector<uint8_t> prefix_bin;
 bool short_char = false, Running = true, require_scan = false, auto_scan = true;
 uint64_t wait_int = 5000, next_scan = 0;
 regex is_url("http(s)?://([\\w-]+\\.)+[\\w-]+(/[\\w- ./?%&=]*)?");
 set<DWORD> ClassInPids;
+mutex lock_url;
 map<DWORD, set<string>> ReplayUrls;
 map<string, set<string>> url_title;
 map<DWORD, map<string, set<string>>> NewFoundUrls;
+
+mutex lock_down_status;
+counting_semaphore<3> download_lock{ 3 };
+vector<DownloadStatus> Downloads;
+down_t_param new_down_args;
+binary_semaphore start_down_thread_lock(1);
+
+mutex lock_scan; // Just in case
+
+CHAR* pwd;
 
 bool IsProcessRunAsAdmin()
 {
@@ -141,6 +176,12 @@ bool EndsWith(const string& str, const string& suffix)
         return false;
 }
 
+vector<string> regex_split(string s, regex re)
+{
+    vector<string> res(sregex_token_iterator(s.begin(), s.end(), re, -1), sregex_token_iterator());
+    return res;
+}
+
 string asc_utf8(string in_str)
 {
     int in_size, wide_size, utf8_size;
@@ -183,6 +224,96 @@ string utf8_asc(string in_str)
     return asc_string;
 }
 
+string w_asc(wstring in_str)
+{
+    int in_size, asc_size;
+    char* asc_string;
+    in_size = in_str.length();
+    asc_size = WideCharToMultiByte(CP_ACP, 0, in_str.data(), in_size, NULL, 0, NULL, NULL);
+    asc_string = (char*)malloc(asc_size + 1);
+    ZeroMemory(asc_string, asc_size + 1);
+    WideCharToMultiByte(CP_ACP, 0, in_str.data(), in_size, asc_string, asc_size, NULL, NULL);
+    return asc_string;
+}
+
+wstring asc_w(string in_str)
+{
+    int in_size, wide_size;
+    wchar_t* wide_string;
+    in_size = in_str.length();
+
+    wide_size = MultiByteToWideChar(CP_ACP, 0, in_str.data(), in_size, NULL, 0);
+    wide_string = (wchar_t*)malloc((wide_size + 1) * sizeof(wchar_t));
+    ZeroMemory(wide_string, (wide_size + 1) * sizeof(wchar_t));
+    MultiByteToWideChar(CP_ACP, 0, in_str.data(), in_size, wide_string, wide_size);
+    return wide_string;
+}
+
+wstring utf8_w(string in_str)
+{
+    int in_size, wide_size;
+    wchar_t* wide_string;
+    in_size = in_str.length();
+
+    wide_size = MultiByteToWideChar(CP_UTF8, 0, in_str.data(), in_size, NULL, 0);
+    wide_string = (wchar_t*)malloc((wide_size + 1) * sizeof(wchar_t));
+    ZeroMemory(wide_string, (wide_size + 1) * sizeof(wchar_t));
+    MultiByteToWideChar(CP_UTF8, 0, in_str.data(), in_size, wide_string, wide_size);
+    return wide_string;
+}
+
+BOOL FindFirstFileExists(LPCTSTR lpPath, DWORD dwFilter)
+{
+    WIN32_FIND_DATAW fd;
+    HANDLE hFind = FindFirstFileW(lpPath, &fd);
+    BOOL bFilter = (FALSE == dwFilter) ? TRUE : fd.dwFileAttributes & dwFilter;
+    BOOL RetValue = ((hFind != INVALID_HANDLE_VALUE) && bFilter) ? TRUE : FALSE;
+    FindClose(hFind);
+    return RetValue;
+}
+
+BOOL FilePathExists(LPCTSTR lpPath)
+{
+    return FindFirstFileExists(lpPath, FALSE);
+}
+
+string GetUniqueFilename(string path, string filename)
+{
+    string path_new = path;
+    if (!EndsWith(path_new, "\\"))
+        path_new += "\\";
+    if (FilePathExists(utf8_w(path_new + filename).data()))
+    {
+        uint64_t add_suffix = 1;
+        regex rename_start(R"((.*\()(\d+)(\)(\.[^.]*|)))"), split_name(R"((.*)(\.[^\.]*|))");
+        smatch match_result;
+        string name_prefix, name_suffix = ")";
+        if (regex_match(filename, match_result, rename_start))
+        {
+            stringstream ss;
+            ss << match_result[2];
+            ss >> add_suffix;
+            name_prefix = match_result[1];
+            name_suffix = match_result[3];
+        }
+        else
+        {
+            regex_match(filename, match_result, split_name);
+            name_prefix = match_result[1];
+            name_prefix += "(";
+            name_suffix += match_result[2];
+        }
+        while (1)
+        {
+            add_suffix += 1;
+            if (!FilePathExists(utf8_w(path_new + name_prefix + to_string(add_suffix) + name_suffix).data()))
+                return name_prefix + to_string(add_suffix) + name_suffix;
+        }
+    }
+    else
+        return filename;
+}
+
 vector<string> FindUrl(DWORD pid)
 {
     vector<string> ret;
@@ -191,7 +322,7 @@ vector<string> FindUrl(DWORD pid)
     size_t tmp_size;
     char* buffer;
     HANDLE h;
-    h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ | PROCESS_VM_WRITE, FALSE, pid);
+    h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
     if (h == 0)
         return ret;
 
@@ -311,6 +442,7 @@ BOOL CALLBACK GetWindowTitles(HWND hwnd, LPARAM lParam)
 
 void ScanUrl()
 {
+    lock_scan.lock();
     vector<string> CurrentUrls;
     ClassInPids.clear();
     NewFoundUrls.clear();
@@ -322,15 +454,17 @@ void ScanUrl()
             NewFoundUrls[*i][CurrentUrls[j]];
     }
     EnumWindows(GetWindowTitles, NULL);
+    lock_url.lock();
     for (map<DWORD, map<string, set<string> > >::iterator i = NewFoundUrls.begin(); i != NewFoundUrls.end(); i++)
         for (map<string, set<string> >::iterator j = (i->second).begin(); j != (i->second).end(); j++)
             for (set<string>::iterator k = (j->second).begin(); k != (j->second).end(); k++)
             {
-                // ReplayUrls[i->first][j->first].insert(*k);
                 ReplayUrls[i->first].insert(j->first);
                 url_title[j->first].insert(*k);
                 cerr << i->first << " " << utf8_asc(j->first) << " " << utf8_asc(*k) << "\n";
             }
+    lock_url.unlock();
+    lock_scan.unlock();
 }
 
 DWORD WINAPI ScanThread(LPVOID lParam)
@@ -357,7 +491,7 @@ DWORD WINAPI ScanThread(LPVOID lParam)
     return 0;
 }
 
-int remux(LPARAM lParam)
+int32_t remux(down_param param)
 {
     const AVOutputFormat* ofmt = NULL;
     AVFormatContext* ifmt_ctx = NULL, * ofmt_ctx = NULL;
@@ -368,23 +502,31 @@ int remux(LPARAM lParam)
     int* stream_mapping = NULL;
     int stream_mapping_size = 0;
 
-
-    in_filename = (char*)((down_param*)lParam)->infile.data();
-    out_filename = (char*)((down_param*)lParam)->outfile.data();
+    in_filename = (char*)param.infile.data();
+    out_filename = (char*)param.outfile.data();
 
     pkt = av_packet_alloc();
     if (!pkt) {
-        fprintf(stderr, "Could not allocate AVPacket\n");
+        lock_down_status.lock();
+        Downloads[param.index].err_msg = "Could not allocate AVPacket";
+        Downloads[param.index].status = DOWNLOAD_FAILED;
+        lock_down_status.unlock();
         return 1;
     }
 
     if ((ret = avformat_open_input(&ifmt_ctx, in_filename, 0, 0)) < 0) {
-        fprintf(stderr, "Could not open input file '%s'", in_filename);
+        lock_down_status.lock();
+        Downloads[param.index].err_msg = "Could not open input file";
+        Downloads[param.index].status = DOWNLOAD_FAILED;
+        lock_down_status.unlock();
         goto end;
     }
 
     if ((ret = avformat_find_stream_info(ifmt_ctx, 0)) < 0) {
-        fprintf(stderr, "Failed to retrieve input stream information");
+        lock_down_status.lock();
+        Downloads[param.index].err_msg = "Failed to retrieve input stream information";
+        Downloads[param.index].status = DOWNLOAD_FAILED;
+        lock_down_status.unlock();
         goto end;
     }
 
@@ -392,7 +534,10 @@ int remux(LPARAM lParam)
 
     avformat_alloc_output_context2(&ofmt_ctx, NULL, NULL, out_filename);
     if (!ofmt_ctx) {
-        fprintf(stderr, "Could not create output context\n");
+        lock_down_status.lock();
+        Downloads[param.index].err_msg = "Could not create output context";
+        Downloads[param.index].status = DOWNLOAD_FAILED;
+        lock_down_status.unlock();
         ret = AVERROR_UNKNOWN;
         goto end;
     }
@@ -401,6 +546,10 @@ int remux(LPARAM lParam)
     stream_mapping = (int*)av_calloc(stream_mapping_size, sizeof(*stream_mapping));
     if (!stream_mapping) {
         ret = AVERROR(ENOMEM);
+        lock_down_status.lock();
+        Downloads[param.index].err_msg = "Unknown error";
+        Downloads[param.index].status = DOWNLOAD_FAILED;
+        lock_down_status.unlock();
         goto end;
     }
 
@@ -419,17 +568,24 @@ int remux(LPARAM lParam)
         }
 
         stream_mapping[i] = stream_index++;
+        Downloads[param.index].percentage.push_back(0);
 
         out_stream = avformat_new_stream(ofmt_ctx, NULL);
         if (!out_stream) {
-            fprintf(stderr, "Failed allocating output stream\n");
+            lock_down_status.lock();
+            Downloads[param.index].err_msg = "Failed allocating output stream";
+            Downloads[param.index].status = DOWNLOAD_FAILED;
+            lock_down_status.unlock();
             ret = AVERROR_UNKNOWN;
             goto end;
         }
 
         ret = avcodec_parameters_copy(out_stream->codecpar, in_codecpar);
         if (ret < 0) {
-            fprintf(stderr, "Failed to copy codec parameters\n");
+            lock_down_status.lock();
+            Downloads[param.index].err_msg = "Failed to copy codec parameters";
+            Downloads[param.index].status = DOWNLOAD_FAILED;
+            lock_down_status.unlock();
             goto end;
         }
         out_stream->codecpar->codec_tag = 0;
@@ -439,18 +595,24 @@ int remux(LPARAM lParam)
     if (!(ofmt->flags & AVFMT_NOFILE)) {
         ret = avio_open(&ofmt_ctx->pb, out_filename, AVIO_FLAG_WRITE);
         if (ret < 0) {
-            fprintf(stderr, "Could not open output file '%s'", out_filename);
+            lock_down_status.lock();
+            Downloads[param.index].err_msg = "Could not open output file";
+            Downloads[param.index].status = DOWNLOAD_FAILED;
+            lock_down_status.unlock();
             goto end;
         }
     }
 
     ret = avformat_write_header(ofmt_ctx, NULL);
     if (ret < 0) {
-        fprintf(stderr, "Error occurred when opening output file\n");
+        lock_down_status.lock();
+        Downloads[param.index].err_msg = "Error occurred when opening output file";
+        Downloads[param.index].status = DOWNLOAD_FAILED;
+        lock_down_status.unlock();
         goto end;
     }
 
-    while (true) {
+    while (Downloads[param.index].status != DOWNLOAD_CANCELLED) {
         AVStream* in_stream, * out_stream;
 
         ret = av_read_frame(ifmt_ctx, pkt);
@@ -478,14 +640,22 @@ int remux(LPARAM lParam)
          * its contents and resets pkt), so that no unreferencing is necessary.
          * This would be different if one used av_write_frame(). */
         if (ret < 0) {
-            fprintf(stderr, "Error muxing packet\n");
+            lock_down_status.lock();
+            Downloads[param.index].err_msg = "Error muxing packet";
+            Downloads[param.index].status = DOWNLOAD_FAILED;
+            lock_down_status.unlock();
             break;
         }
+        AVRational* time_base = &ifmt_ctx->streams[pkt->stream_index]->time_base;
+        lock_down_status.lock();
+        Downloads[param.index].percentage[pkt->stream_index] = 100.0 \
+            * ((pkt->pts * av_q2d(*time_base) - ifmt_ctx->start_time / (double)AV_TIME_BASE)) \
+            / (ifmt_ctx->duration / (double)AV_TIME_BASE);
+        lock_down_status.unlock();
     }
 
     av_write_trailer(ofmt_ctx);
 end:
-    printf("\n");
     av_packet_free(&pkt);
 
     avformat_close_input(&ifmt_ctx);
@@ -498,13 +668,76 @@ end:
     av_freep(&stream_mapping);
 
     if (ret < 0 && ret != AVERROR_EOF) {
-        //fprintf(stderr, "Error occurred: %s\n", av_err2str(ret));
         return 1;
     }
-
+    lock_down_status.lock();
+    if (Downloads[param.index].status == DOWNLOADING)
+        Downloads[param.index].status = DOWNLOAD_SUCCEEDED;
+    lock_down_status.unlock();
     return 0;
 }
 
+DWORD WINAPI RemuxStarter(LPVOID lParam)
+{
+    down_t_param tparam = new_down_args;
+    start_down_thread_lock.release();
+    down_param param;
+    DownloadStatus status_new;
+    regex slash("[\\\\/]+"), symbols_file("[<\\|>\\?\\*:\"/\\\\]");
+    int ret_code;
+    bool allow_download = true;
+
+    status_new.path = tparam.path.find(":") != tparam.path.npos ?
+        regex_replace(tparam.path, slash, "\\") :
+        asc_utf8(pwd) + regex_replace(tparam.path, slash, "\\");
+    status_new.filename = tparam.filename;
+    status_new.fallback_filename = regex_replace(tparam.filename, symbols_file, "_");
+    status_new.url = tparam.url;
+    status_new.status = DOWNLOAD_WAITING;
+    if (!EndsWith(status_new.path, "\\"))
+        status_new.path += "\\";
+
+    lock_down_status.lock();
+    param.index = Downloads.size();
+    Downloads.push_back(status_new);
+    ret_code = SHCreateDirectory(NULL, utf8_w(Downloads[param.index].path).data());
+    if (ret_code != ERROR_SUCCESS && ret_code != ERROR_ALREADY_EXISTS && ret_code != ERROR_FILE_EXISTS)
+    {
+        Downloads[param.index].status = DOWNLOAD_FAILED;
+        Downloads[param.index].err_msg = "Failed to create folder: WinError ";
+        Downloads[param.index].err_msg += to_string(ret_code);
+        allow_download = false;
+    }
+    lock_down_status.unlock();
+
+    if (allow_download)
+    {
+        download_lock.acquire();
+        lock_down_status.lock();
+        Downloads[param.index].fallback_filename = GetUniqueFilename(Downloads[param.index].path, Downloads[param.index].fallback_filename);
+        Downloads[param.index].status = DOWNLOADING;
+        param.infile = Downloads[param.index].url;
+        param.outfile = Downloads[param.index].fallback_filename;
+        cerr << "[" << param.index << "] Start downloading " << Downloads[param.index].url << " to directory \""
+            << Downloads[param.index].path << "\" with file name \"" << Downloads[param.index].fallback_filename
+            << "\"\n";
+        lock_down_status.unlock();
+        remux(param);
+        Downloads[param.index].status = DOWNLOADING;
+        if (Downloads[param.index].status != DOWNLOAD_SUCCEEDED &&
+            Downloads[param.index].status != DOWNLOAD_FAILED &&
+            Downloads[param.index].status != DOWNLOAD_CANCELLED)
+        {
+            Downloads[param.index].status = DOWNLOAD_FAILED;
+            Downloads[param.index].err_msg = "Unknown error";
+        }
+        cerr << "[" << param.index << "] Download finished with code " << Downloads[param.index].status
+            << " error message (if success, it's empty): \n    " << Downloads[param.index].err_msg << "\n";
+        lock_down_status.unlock();
+        download_lock.release();
+    }
+    return 0;
+}
 
 int main(int argc, char** argv)
 {
@@ -513,7 +746,7 @@ int main(int argc, char** argv)
         cerr << "This program only supports Windows 10 or greater. \n";
         return 1;
     }
-
+    
     uint16_t port = 2473;
     string prefix = "680074007400700073003a002f002f0070006c00610079006200610063006b002e00650065006f002e0063006e002f00";
     string ip = "127.0.0.1";
@@ -559,6 +792,14 @@ int main(int argc, char** argv)
     for (uint64_t i = 0; i < prefix.length(); i += 2)
         prefix_bin.push_back(hex2int(prefix[i]) * 16 + hex2int(prefix[i + 1]));
 
+    size_t pwd_len = GetCurrentDirectoryA(0, NULL) + 2;
+    pwd = (CHAR*)malloc(pwd_len * sizeof(CHAR));
+    GetCurrentDirectoryA(pwd_len, pwd);
+    string pwd_asc = pwd;
+    if (!EndsWith(pwd_asc, "\\"))
+        pwd_asc += "\\";
+    cerr << "Program running at " << pwd_asc << "\n";
+
     DWORD tid;
     HANDLE tHandle;
     tHandle = CreateThread(NULL, 0, ScanThread, NULL, 0, &tid);
@@ -567,50 +808,65 @@ int main(int argc, char** argv)
         cerr << "Failed to start thread: " << GetLastError() << "\n";
         return 1;
     }
+    CloseHandle(tHandle);
 
     Server svr;
 
     svr.Get("/", [](const Request& req, Response& res) {
         res.set_content(vec2str(GetResource(IDR_HTML1, RT_HTML)), "text/html");
+        res.set_header("Cache-Control", "no-cache");
         });
 
     svr.Get("/js/video.min.js", [](const Request& req, Response& res) {
         res.set_content(vec2str(GetResource(IDR_JS1, L"JS")), "text/javascript");
+        res.set_header("Cache-Control", "no-cache");
         });
 
     svr.Get("/js/videojs-http-streaming.min.js", [](const Request& req, Response& res) {
         res.set_content(vec2str(GetResource(IDR_JS2, L"JS")), "text/javascript");
+        res.set_header("Cache-Control", "no-cache");
         });
 
     svr.Get("/css/video-js.min.css", [](const Request& req, Response& res) {
         res.set_content(vec2str(GetResource(IDR_CSS1, L"CSS")), "text/css");
+        res.set_header("Cache-Control", "no-cache");
         });
 
     svr.Get("/css/style.min.css", [](const Request& req, Response& res) {
         res.set_content(vec2str(GetResource(IDR_CSS2, L"CSS")), "text/css");
+        res.set_header("Cache-Control", "no-cache");
         });
 
     svr.Get("/js/script.min.js", [](const Request& req, Response& res) {
         res.set_content(vec2str(GetResource(IDR_JS3, L"JS")), "text/javascript");
+        res.set_header("Cache-Control", "no-cache");
         });
 
     svr.Get("/get-urls", [](const Request& req, Response& res) {
+        lock_url.lock();
         json res_json(ReplayUrls);
+        lock_url.unlock();
         res.set_content(res_json.dump(), "text/json");
+        res.set_header("Cache-Control", "no-cache");
         });
 
     svr.Get("/get-titles", [](const Request& req, Response& res) {
+        lock_url.lock();
         json res_json(url_title);
+        lock_url.unlock();
         res.set_content(res_json.dump(), "text/json");
+        res.set_header("Cache-Control", "no-cache");
         });
 
     svr.Get("/scan", [](const Request& req, Response& res) {
         require_scan = true;
         res.set_content("success", "text/plain");
+        res.set_header("Cache-Control", "no-cache");
         });
 
     svr.Post("/set-autoscan-delay", [](const Request& req, Response& res) {
         res.set_content("success", "text/plain");
+        res.set_header("Cache-Control", "no-cache");
         json body = json::parse(req.body);
         if (!body.is_number())
             res.set_content("Invalid argument: body should be a single float number", "text/plain");
@@ -628,18 +884,127 @@ int main(int argc, char** argv)
         auto_scan = true;
         next_scan = GetTickCount64() - 1;
         res.set_content("success", "text/plain");
+        res.set_header("Cache-Control", "no-cache");
         });
 
     svr.Get("/disable-autoscan", [](const Request& req, Response& res) {
         auto_scan = false;
         res.set_content("success", "text/plain");
+        res.set_header("Cache-Control", "no-cache");
         });
 
     svr.Get("/get-status", [](const Request& req, Response& res) {
-        json ret_json = json::parse(R"({})");
+        json ret_json = "{}"_json;
         ret_json["autoscan"] = auto_scan;
         ret_json["wait_interval"] = (double)wait_int / 1000;
         res.set_content(ret_json.dump(), "text/json");
+        res.set_header("Cache-Control", "no-cache");
+        });
+
+    svr.Post("/require-download", [](const Request& req, Response& res) {
+        uint8_t success = 1;
+        json body;
+        try
+        {
+            body = json::parse(req.body, nullptr, true, true);
+        }
+        catch (exception e) {
+            success = 2;
+            goto end;
+        }
+        if (!body.is_object())
+            success = 2;
+        else
+        {
+            if ((!body.contains("path")) || (!body.contains("downloads")))
+                success = 2;
+            else
+            {
+                if (!body["downloads"].is_array())
+                    success = 2;
+                for (int i = 0; i < body["downloads"].size(); i++)
+                {
+                    if (!body["downloads"][i].is_object())
+                        success = 2;
+                    if ((!body["downloads"][i].contains("url")) || (!body["downloads"][i].contains("name")))
+                        success = 2;
+                }
+                string url, name;
+                for (int i = 0; i < body["downloads"].size(); i++)
+                {
+                    HANDLE ltHandle;
+                    new_down_args.filename = body["downloads"][i]["name"];
+                    new_down_args.path = body["path"];
+                    new_down_args.url = body["downloads"][i]["url"];
+                    start_down_thread_lock.acquire();
+                    ltHandle = CreateThread(NULL, 0, RemuxStarter, NULL, 0, NULL);
+                    if (ltHandle)
+                        CloseHandle(ltHandle);
+                    else
+                        start_down_thread_lock.release();
+                }
+            }
+        }
+    end:
+        res.set_header("Cache-Control", "no-cache");
+        if (success == 1)
+            res.set_content("success", "text/plain");
+        else if(success == 2)
+            res.set_content("Invalid argument: format should be like {\"path\": ..., \"downloads\": [{\"url\": ..., \"name\": ...}, ...]}", "text/plain");
+        });
+
+    svr.Delete("/cancel-download/(\\d+)", [&](const Request& req, Response& res) {
+        string index_str = req.matches[1];
+        stringstream ss;
+        ss << index_str;
+        uint64_t index;
+        ss >> index;
+        res.set_header("Cache-Control", "no-cache");
+        if (index >= Downloads.size())
+            res.set_content("request out of range", "text/plain");
+        else if (Downloads[index].status == DOWNLOADING || Downloads[index].status == DOWNLOAD_WAITING)
+        {
+            Downloads[index].status = DOWNLOAD_CANCELLED;
+            res.set_content("success", "text/plain");
+        }
+        });
+
+    svr.Get("/download-status", [](const Request& req, Response& res) {
+        json ret_json = "[]"_json, empty_dict = "{}"_json;
+        lock_down_status.lock();
+        for (int i = 0; i < Downloads.size(); i++)
+        {
+            ret_json.push_back(empty_dict);
+            ret_json[i]["url"] = Downloads[i].url;
+            ret_json[i]["name"] = Downloads[i].fallback_filename;
+            ret_json[i]["path"] = Downloads[i].path;
+            ret_json[i]["status"] = Downloads[i].status;
+            if (Downloads[i].status == DOWNLOAD_WAITING)
+            {
+                ret_json[i]["percent"] = 0.0;
+                ret_json[i]["msg"] = "";
+            }
+            else if (Downloads[i].status == DOWNLOAD_SUCCEEDED)
+            {
+                ret_json[i]["percent"] = 100.0;
+                ret_json[i]["msg"] = "";
+            }
+            else
+            {
+                double percentage = 0;
+                for (int j = 0; j < Downloads[i].percentage.size(); j++)
+                    percentage += Downloads[i].percentage[j];
+                percentage /= Downloads[i].percentage.size();
+                ret_json[i]["percent"] = percentage < 0 ? 0.0 : (percentage >= 100 ? 99.99 : percentage);
+                if (Downloads[i].status != DOWNLOADING)
+                    ret_json[i]["msg"] = Downloads[i].err_msg;
+                else
+                    ret_json[i]["msg"] = "";
+            }
+        }
+        lock_down_status.unlock();
+        res.set_content(ret_json.dump(), "text/json");
+        res.set_header("Cache-Control", "no-cache");
         });
 
     svr.Get("/stop", [&](const Request& req, Response& res) {
@@ -669,7 +1034,7 @@ int main(int argc, char** argv)
         ShellExecuteA(NULL, "open", url_open.data(), NULL, NULL, SW_SHOW);
     }
 
-    cout << "Start listening at " << url_open << "\n";
+    cerr << "Visit " << url_open << " to operate\n";
     svr.listen(ip, port);
 
     return 0;

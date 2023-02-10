@@ -45,7 +45,7 @@ body {
     margin-left: .5rem;
     margin-right: .5rem;
     cursor: pointer;
-    transition: all linear .2s;
+    transition: all ease .2s;
     border-radius: .3rem;
     position: relative;
 }
@@ -117,7 +117,7 @@ body {
     line-height: 2.1rem;
     font-size: 2rem;
     border-radius: .3rem;
-    transition: all linear .2s;
+    transition: all ease .2s;
 }
 
 .close-btn:hover {
@@ -140,7 +140,7 @@ body {
 .list-item {
     border-bottom: #aaa 1px solid;
     min-height: 3rem;
-    transition: all linear .2s;
+    transition: all ease .2s;
     padding: .4rem;
     display: flex;
     flex-direction: row;
@@ -179,7 +179,7 @@ body {
     height: 100%;
     border-radius: 1rem;
     background: #7ce;
-    transition: all linear .25s;
+    transition: all ease .25s;
 }
 
 .progress-bar-failed {
@@ -187,7 +187,7 @@ body {
     border-radius: 1rem;
     width: 100%;
     background: #e04;
-    transition: all linear .25s;
+    transition: all ease .25s;
 }
 
 .progress-bar-success {
@@ -195,7 +195,7 @@ body {
     border-radius: 1rem;
     width: 100%;
     background: #3e8;
-    transition: all linear .25s;
+    transition: all ease .25s;
 }
 
 .percentage {
@@ -214,7 +214,7 @@ body {
     line-height: .9rem;
     border-radius: 1rem;
     font-weight: bolder;
-    transition: all linear .2s;
+    transition: all ease .2s;
 }
 
 .cancel-btn:active {
@@ -232,7 +232,7 @@ body {
     line-height: .9rem;
     border-radius: 1rem;
     font-weight: bolder;
-    transition: all linear .2s;
+    transition: all ease .2s;
 }
 
 .content {
@@ -249,7 +249,7 @@ body {
     border: 1px #eee solid;
     border-radius: .7rem;
     background: #fff;
-    transition: all linear .2s;
+    transition: all ease .2s;
     display: flex;
     flex-direction: row;
     flex-wrap: wrap;
@@ -286,7 +286,7 @@ body {
     width: 1rem;
     background: #06c;
     cursor: pointer;
-    transition: all linear .2s;
+    transition: all ease .2s;
     line-height: 1.4rem;
 }
 
@@ -296,7 +296,7 @@ body {
     border: #9ee 2px solid;
     padding: .5rem;
     cursor: pointer;
-    transition: all linear .2s;
+    transition: all ease .2s;
     border-radius: .3rem;
     margin-top: .3rem;
     margin-bottom: .3rem;
@@ -331,7 +331,7 @@ body {
     width: 1rem;
     background: #06c;
     cursor: pointer;
-    transition: all linear .2s;
+    transition: all ease .2s;
 }
 
 .select-vid:checked,
@@ -354,7 +354,7 @@ body {
     content: ' ';
     box-sizing: border-box;
     border-radius: .2rem;
-    transition: all linear .2s;
+    transition: all ease .2s;
 }
 
 .select-vid:checked::after,
