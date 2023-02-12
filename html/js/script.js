@@ -39,8 +39,13 @@ var count = 0,
 
 function ClearVideos() {
     shown_videos = {};
+    down_status = 0;
     e = qa(".item");
     for (var i = 1; i < e.length; i++) {
+        e[i].remove()
+    }
+    e = qa("#down-list>.list-item")
+    for (var i = 0; i < e.length; i++) {
         e[i].remove()
     }
 }
@@ -80,7 +85,7 @@ function AddVideo(url, titles) {
 }
 
 function GetVideos(r = true) {
-    fetch("/get-titles").then(response => response.json(), () => {}).then(data => {
+    fetch("/get-titles").then(response => response.json(), () => { location.href = "about:blank" }).then(data => {
         for (var url in data) {
             AddVideo(url, data[url])
         }
@@ -110,7 +115,7 @@ function StopModify() {
 }
 
 function RefreshStatus() {
-    fetch("/get-status").then(response => response.json(), () => { setTimeout(RefreshStatus, 1000) }).then(data => {
+    fetch("/get-status").then(response => response.json(), () => { location.href = "about:blank" }).then(data => {
         q(".conf-panel>.check-big").checked = data["autoscan"];
         if (!modifying) { q(".delay-int").value = data["wait_interval"] }
         setTimeout(RefreshStatus, 1000)
@@ -125,3 +130,56 @@ function SwitchAutoScan() {
 function ChangeDelayTime() {
     fetch("/set-autoscan-delay", { method: 'POST', body: q(".delay-int").value.toString() });
 }
+
+var down_status = 0;
+
+function RefreshDownloads() {
+    fetch("/download-status").then(response => response.json(), () => { location.href = "about:blank" }).then(data => {
+        if (data.length > down_status) {
+            for (var i = down_status; i < data.length; i++) {
+                var n = document.createElement("div");
+                n.setAttribute("id", "down-item" + i);
+                n.setAttribute("class", "list-item");
+                n.innerHTML = '<div class="down-filename">' + HTMLEncode(data[i]["name"]) + '</div><div class="down-filepath">' + HTMLEncode(data[i]["path"]) + '</div><div class="percentage">' + data[i]["percent"].toFixed(2) + '%</div><div class="progress-bar-container"><div class="progress-bar"></div></div><div class="cancel-btn" id="cancel-btn' + i + '">×</div><div class="error-message">' + HTMLEncode(data[i]["msg"]) + '</div>';
+                q("#down-list").appendChild(n);
+                q("#down-item" + i + ">.cancel-btn").onclick = Function('fetch("/cancel-download/' + i + '",{method:"DELETE"})');
+                down_status++;
+            }
+        }
+        for (var i = 0; i < data.length; i++) {
+            var fn = q("#down-item" + i + ">.down-filename"),
+                fp = q("#down-item" + i + ">.down-filepath"),
+                fpc = q("#down-item" + i + ">.percentage"),
+                fm = q("#down-item" + i + ">.error-message"),
+                fpb = q("#down-item" + i + " .progress-bar"),
+                fc = q("#cancel-btn" + i);
+            var en_name = HTMLEncode(data[i]["name"]),
+                en_path = HTMLEncode(data[i]["path"]),
+                en_msg = HTMLEncode(data[i]["msg"]);
+            if (fn.innerHTML !== en_name) { fn.innerHTML = en_name }
+            if (fp.innerHTML !== en_path) { fp.innerHTML = en_path }
+            if (fpc.innerHTML !== data[i]["percent"].toFixed(2) + "%") { fpc.innerHTML = data[i]["percent"].toFixed(2) + "%" }
+            if (fm.innerHTML !== en_msg) { fm.innerHTML = en_msg }
+            fpb.style.width = data[i]["percent"].toFixed(2) + "%";
+            if (data[i]["status"] == 1) {
+                if (!fpb.classList.contains("progress-bar-downloading")) {
+                    fpb.setAttribute("class", "progress-bar progress-bar-downloading")
+                }
+            } else if (data[i]["status"] == 4) {
+                if (!fpb.classList.contains("progress-bar-success")) {
+                    fpb.setAttribute("class", "progress-bar progress-bar-success")
+                }
+                fc.setAttribute("class", "cancel-btn-disabled");
+                fc.onclick = null;
+            } else if (data[i]["status"] == 2 || data[i]["status"] == 3) {
+                if (!fpb.classList.contains("progress-bar-failed")) {
+                    fpb.setAttribute("class", "progress-bar progress-bar-failed")
+                }
+                fc.setAttribute("class", "cancel-btn-disabled");
+                fc.onclick = null;
+            }
+        }
+        setTimeout(RefreshDownloads, 500);
+    })
+}
+RefreshDownloads();

@@ -720,15 +720,18 @@ DWORD WINAPI RemuxStarter(LPVOID lParam)
         download_lock.acquire();
         lock_down_status.lock();
         Downloads[param.index].fallback_filename = GetUniqueFilename(Downloads[param.index].path, Downloads[param.index].fallback_filename);
-        Downloads[param.index].status = DOWNLOADING;
-        param.infile = Downloads[param.index].url;
-        param.outfile = Downloads[param.index].fallback_filename;
-        cerr << "[" << param.index << "] Start downloading " << Downloads[param.index].url << " to directory \""
-            << Downloads[param.index].path << "\" with file name \"" << Downloads[param.index].fallback_filename
-            << "\"\n";
-        lock_down_status.unlock();
-        remux(param);
-        lock_down_status.lock();
+        if (Downloads[param.index].status != DOWNLOAD_CANCELLED)
+        {
+            Downloads[param.index].status = DOWNLOADING;
+            param.infile = Downloads[param.index].url;
+            param.outfile = Downloads[param.index].fallback_filename;
+            cerr << "[" << param.index << "] Start downloading " << Downloads[param.index].url << " to directory \""
+                << Downloads[param.index].path << "\" with file name \"" << Downloads[param.index].fallback_filename
+                << "\"\n";
+            lock_down_status.unlock();
+            remux(param);
+            lock_down_status.lock();
+        }
         if (Downloads[param.index].status != DOWNLOAD_SUCCEEDED &&
             Downloads[param.index].status != DOWNLOAD_FAILED &&
             Downloads[param.index].status != DOWNLOAD_CANCELLED)
@@ -736,6 +739,8 @@ DWORD WINAPI RemuxStarter(LPVOID lParam)
             Downloads[param.index].status = DOWNLOAD_FAILED;
             Downloads[param.index].err_msg = "Unknown error";
         }
+        if (Downloads[param.index].status == DOWNLOAD_CANCELLED)
+            Downloads[param.index].err_msg = "Operation cancelled by user";
         cerr << "[" << param.index << "] Download finished with code " << (int)Downloads[param.index].status
             << "; error message (if success, it's empty): \n    " << Downloads[param.index].err_msg << "\n";
         lock_down_status.unlock();
@@ -749,6 +754,7 @@ int main(int argc, char** argv)
     if (!IsWindows10OrGreater())
     {
         cerr << "This program only supports Windows 10 or greater. \n";
+        system("pause");
         return 1;
     }
     
@@ -983,9 +989,15 @@ int main(int argc, char** argv)
         res.set_header("Cache-Control", "no-cache");
         if (index >= Downloads.size())
             res.set_content("request out of range", "text/plain");
-        else if (Downloads[index].status == DOWNLOADING || Downloads[index].status == DOWNLOAD_WAITING)
+        else if (Downloads[index].status == DOWNLOADING)
         {
             Downloads[index].status = DOWNLOAD_CANCELLED;
+            res.set_content("success", "text/plain");
+        }
+        else if (Downloads[index].status == DOWNLOAD_WAITING)
+        {
+            Downloads[index].status = DOWNLOAD_CANCELLED;
+            Downloads[index].err_msg = "Operation cancelled by user";
             res.set_content("success", "text/plain");
         }
         });

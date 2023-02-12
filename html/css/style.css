@@ -175,27 +175,24 @@ body {
     margin: .4rem;
 }
 
-.progress-bar-downloading {
+.progress-bar {
     height: 100%;
     border-radius: 1rem;
-    background: #7ce;
     transition: all ease .25s;
+}
+
+.progress-bar-downloading {
+    background: #7ce;
 }
 
 .progress-bar-failed {
-    height: 100%;
-    border-radius: 1rem;
     width: 100%;
     background: #e04;
-    transition: all ease .25s;
 }
 
 .progress-bar-success {
-    height: 100%;
-    border-radius: 1rem;
     width: 100%;
     background: #3e8;
-    transition: all ease .25s;
 }
 
 .percentage {
@@ -233,6 +230,13 @@ body {
     border-radius: 1rem;
     font-weight: bolder;
     transition: all ease .2s;
+}
+
+.error-message {
+    color: #c30;
+    width: 100%;
+    font-size: .5rem;
+    word-break: break-word;
 }
 
 .content {
