@@ -19,7 +19,7 @@
             <button class="btn-header" onclick="RequireScan()">Scan replays</button>
             <button class="btn-header" onclick="ClearVideos();GetVideos(false)">Refresh</button>
             <button class="btn-header" onclick="OpenDownList()">Download list<div class="notify-num">2</div></button>
-            <button class="btn-header">Download selected</button>
+            <button class="btn-header" onclick="Download_Select()">Download selected</button>
             <button class="btn-header" onclick="fetch('/stop').then(null,()=>{location.href='about:blank'})">Exit</button>
         </div>
     </div>

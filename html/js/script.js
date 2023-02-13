@@ -64,12 +64,13 @@ function AddVideo(url, titles) {
     var n = document.createElement("div");
     n.setAttribute("class", "item");
     n.setAttribute("id", "item" + id);
+    n.setAttribute("down-url", url);
     n.style.opacity = '0';
     var ndata = [];
     for (var i = 0; i < titles.length; i++) {
         ndata.push(HTMLEncode(titles[i]))
     }
-    n.innerHTML = '<input type="checkbox" class="select-vid"><div class="vid-container"><video-js oncontextmenu="return false" controls id="video' + id + '"><source src="' + url + '"></video-js></div><div class="item-opt"><div class="filename"></div><input class="input-filename" id="filename' + id + '" list="list' + id + '"><datalist id="list' + id + '"><option>' + ndata.join('</option><option>') + '</option></datalist><div class="fileext"></div><select class="select-fileext"><option>.mp4</option><option>.mkv</option><option>.m4v</option><option>.flv</option></select><button class="btn">Download</button>';
+    n.innerHTML = '<input type="checkbox" class="select-vid"><div class="vid-container"><video-js oncontextmenu="return false" controls id="video' + id + '"><source src="' + url + '"></video-js></div><div class="item-opt"><div class="filename"></div><input class="input-filename" id="filename' + id + '" list="list' + id + '"><datalist id="list' + id + '"><option>' + ndata.join('</option><option>') + '</option></datalist><div class="fileext"></div><select class="select-fileext" id="ext' + i + '"><option>.mp4</option><option>.mkv</option><option>.m4v</option><option>.flv</option></select><button class="btn" onclick="Download(' + i + ')">Download</button>';
     q(".content").appendChild(n);
     for (var i = 0; i < ndata.length; i++) {
         if ((!ndata[i].toLowerCase().includes("classin")) && (!ndata[i].toLowerCase().includes("classroom"))) {
@@ -146,6 +147,7 @@ function RefreshDownloads() {
                 down_status++;
             }
         }
+        var count = 0;
         for (var i = 0; i < data.length; i++) {
             var fn = q("#down-item" + i + ">.down-filename"),
                 fp = q("#down-item" + i + ">.down-filepath"),
@@ -161,11 +163,13 @@ function RefreshDownloads() {
             if (fpc.innerHTML !== data[i]["percent"].toFixed(2) + "%") { fpc.innerHTML = data[i]["percent"].toFixed(2) + "%" }
             if (fm.innerHTML !== en_msg) { fm.innerHTML = en_msg }
             fpb.style.width = data[i]["percent"].toFixed(2) + "%";
+            count += (data[i]["status"] == 5 || data[i]["status"] == 1) ? 1 : 0;
             if (data[i]["status"] == 1) {
                 if (!fpb.classList.contains("progress-bar-downloading")) {
                     fpb.setAttribute("class", "progress-bar progress-bar-downloading")
                 }
-            } else if (data[i]["status"] == 4) {
+            } else
+            if (data[i]["status"] == 4) {
                 if (!fpb.classList.contains("progress-bar-success")) {
                     fpb.setAttribute("class", "progress-bar progress-bar-success")
                 }
@@ -179,7 +183,19 @@ function RefreshDownloads() {
                 fc.onclick = null;
             }
         }
+        if (q(".notify-num").innerHTML != count) { q(".notify-num").innerHTML = count }
         setTimeout(RefreshDownloads, 500);
     })
 }
 RefreshDownloads();
+
+function Download(index) {
+    fetch("/require-download", { method: "POST", body: JSON.stringify({ "path": q("#path").value, "downloads": [{ "url": q("#item" + index).getAttribute("down-url"), "name": q("#filename" + index).value + q("#ext" + index).value }] }) });
+}
+
+function Download_Select() {
+    var sel = qa(".item>.select-vid:checked");
+    for (var i = 0; i < sel.length; i++) {
+        Download(parseInt(sel[i].parentNode.getAttribute("id").slice(4)));
+    }
+}
