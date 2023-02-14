@@ -70,7 +70,7 @@ function AddVideo(url, titles) {
     for (var i = 0; i < titles.length; i++) {
         ndata.push(HTMLEncode(titles[i]))
     }
-    n.innerHTML = '<input type="checkbox" class="select-vid"><div class="vid-container"><video-js oncontextmenu="return false" controls id="video' + id + '"><source src="' + url + '"></video-js></div><div class="item-opt"><div class="filename"></div><input class="input-filename" id="filename' + id + '" list="list' + id + '"><datalist id="list' + id + '"><option>' + ndata.join('</option><option>') + '</option></datalist><div class="fileext"></div><select class="select-fileext" id="ext' + i + '"><option>.mp4</option><option>.mkv</option><option>.m4v</option><option>.flv</option></select><button class="btn" onclick="Download(' + i + ')">Download</button>';
+    n.innerHTML = '<input type="checkbox" class="select-vid"><div class="vid-container"><video-js oncontextmenu="return false" controls id="video' + id + '"><source src="' + url + '"></video-js></div><div class="item-opt"><div class="filename"></div><input class="input-filename" id="filename' + id + '" list="list' + id + '"><datalist id="list' + id + '"><option>' + ndata.join('</option><option>') + '</option></datalist><div class="fileext"></div><select class="select-fileext" id="ext' + id + '"><option>.mp4</option><option>.mkv</option><option>.m4v</option><option>.flv</option></select><button class="btn" onclick="Download(' + id + ')">Download</button>';
     q(".content").appendChild(n);
     for (var i = 0; i < ndata.length; i++) {
         if ((!ndata[i].toLowerCase().includes("classin")) && (!ndata[i].toLowerCase().includes("classroom"))) {
