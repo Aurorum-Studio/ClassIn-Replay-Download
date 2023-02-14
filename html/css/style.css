@@ -25,6 +25,7 @@ body {
 .info-header {
     color: #1a1a1a;
     margin-bottom: .3rem;
+    cursor: pointer;
 }
 
 .header-btn-box {

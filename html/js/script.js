@@ -95,7 +95,6 @@ function GetVideos(r = true) {
         }
     });
 }
-GetVideos();
 
 var modifying = false,
     modify_timeout = 0,
@@ -122,7 +121,6 @@ function RefreshStatus() {
         setTimeout(RefreshStatus, 1000)
     })
 }
-RefreshStatus()
 
 function SwitchAutoScan() {
     fetch(q(".conf-panel>.check-big").checked ? "/enable-autoscan" : "/disable-autoscan")
@@ -187,7 +185,6 @@ function RefreshDownloads() {
         setTimeout(RefreshDownloads, 500);
     })
 }
-RefreshDownloads();
 
 function Download(index) {
     fetch("/require-download", { method: "POST", body: JSON.stringify({ "path": q("#path").value, "downloads": [{ "url": q("#item" + index).getAttribute("down-url"), "name": q("#filename" + index).value + q("#ext" + index).value }] }) });
@@ -199,3 +196,6 @@ function Download_Select() {
         Download(parseInt(sel[i].parentNode.getAttribute("id").slice(4)));
     }
 }
+GetVideos();
+RefreshStatus()
+RefreshDownloads();

@@ -757,6 +757,8 @@ int main(int argc, char** argv)
         system("pause");
         return 1;
     }
+
+    cerr << "ClassIn Replay Download 1.0.0 Beta 1\nCopyright (C) 2023 Carl Gao\nVisit https://github.com/CarlGao4/ClassIn-Replay-Download for more infomation. \n\n";
     
     uint16_t port = 2473;
     string prefix = "680074007400700073003a002f002f0070006c00610079006200610063006b002e00650065006f002e0063006e002f00";
