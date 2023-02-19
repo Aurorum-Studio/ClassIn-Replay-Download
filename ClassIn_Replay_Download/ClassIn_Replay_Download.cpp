@@ -724,7 +724,7 @@ DWORD WINAPI RemuxStarter(LPVOID lParam)
         {
             Downloads[param.index].status = DOWNLOADING;
             param.infile = Downloads[param.index].url;
-            param.outfile = Downloads[param.index].fallback_filename;
+            param.outfile = Downloads[param.index].path + Downloads[param.index].fallback_filename;
             cerr << "[" << param.index << "] Start downloading " << Downloads[param.index].url << " to directory \""
                 << Downloads[param.index].path << "\" with file name \"" << Downloads[param.index].fallback_filename
                 << "\"\n";
@@ -960,10 +960,10 @@ int main(int argc, char** argv)
                         goto end;
                     }
                     HANDLE ltHandle;
+                    start_down_thread_lock.acquire();
                     new_down_args.filename = body["downloads"][i]["name"];
                     new_down_args.path = body["path"];
                     new_down_args.url = body["downloads"][i]["url"];
-                    start_down_thread_lock.acquire();
                     ltHandle = CreateThread(NULL, 0, RemuxStarter, NULL, 0, NULL);
                     if (ltHandle)
                         CloseHandle(ltHandle);
